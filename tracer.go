@@ -22,6 +22,9 @@ import (
 	"log"
 	"net/http"
 
+	"github.com/cloudwego/kitex/pkg/klog"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+
 	prom "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
@@ -100,14 +103,21 @@ func (c *clientTracer) Finish(ctx context.Context) {
 }
 
 // NewClientTracer provide tracer for client call, addr and path is the scrape_configs for prometheus server.
-func NewClientTracer(addr, path string) stats.Tracer {
-	registry := prom.NewRegistry()
-	http.Handle(path, promhttp.HandlerFor(registry, promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError}))
-	go func() {
-		if err := http.ListenAndServe(addr, nil); err != nil {
-			log.Fatal("Unable to start a promhttp server, err: " + err.Error())
-		}
-	}()
+func NewClientTracer(addr, path string, opts ...Option) stats.Tracer {
+	cfg := defaultConfig()
+
+	for _, opt := range opts {
+		opt.apply(cfg)
+	}
+
+	if !cfg.disableServer {
+		http.Handle(path, promhttp.HandlerFor(cfg.registry, promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError}))
+		go func() {
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				log.Fatal("Unable to start a promhttp server, err: " + err.Error())
+			}
+		}()
+	}
 
 	clientHandledCounter := prom.NewCounterVec(
 		prom.CounterOpts{
@@ -116,7 +126,7 @@ func NewClientTracer(addr, path string) stats.Tracer {
 		},
 		[]string{labelKeyCaller, labelKeyCallee, labelKeyMethod, labelKeyStatus, labelKeyRetry},
 	)
-	registry.MustRegister(clientHandledCounter)
+	cfg.registry.MustRegister(clientHandledCounter)
 
 	clientHandledHistogram := prom.NewHistogramVec(
 		prom.HistogramOpts{
@@ -126,7 +136,13 @@ func NewClientTracer(addr, path string) stats.Tracer {
 		},
 		[]string{labelKeyCaller, labelKeyCallee, labelKeyMethod, labelKeyStatus, labelKeyRetry},
 	)
-	registry.MustRegister(clientHandledHistogram)
+	cfg.registry.MustRegister(clientHandledHistogram)
+	if cfg.enableGoCollector {
+		err := cfg.registry.Register(collectors.NewGoCollector())
+		if err != nil {
+			klog.Warn(err)
+		}
+	}
 
 	return &clientTracer{
 		clientHandledCounter:   clientHandledCounter,
@@ -166,14 +182,21 @@ func (c *serverTracer) Finish(ctx context.Context) {
 }
 
 // NewServerTracer provides tracer for server access, addr and path is the scrape_configs for prometheus server.
-func NewServerTracer(addr, path string) stats.Tracer {
-	registry := prom.NewRegistry()
-	http.Handle(path, promhttp.HandlerFor(registry, promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError}))
-	go func() {
-		if err := http.ListenAndServe(addr, nil); err != nil {
-			log.Fatal("Unable to start a promhttp server, err: " + err.Error())
-		}
-	}()
+func NewServerTracer(addr, path string, opts ...option) stats.Tracer {
+	cfg := defaultConfig()
+
+	for _, opt := range opts {
+		opt.apply(cfg)
+	}
+
+	if !cfg.disableServer {
+		http.Handle(path, promhttp.HandlerFor(cfg.registry, promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError}))
+		go func() {
+			if err := http.ListenAndServe(addr, nil); err != nil {
+				log.Fatal("Unable to start a promhttp server, err: " + err.Error())
+			}
+		}()
+	}
 
 	serverHandledCounter := prom.NewCounterVec(
 		prom.CounterOpts{
@@ -182,17 +205,24 @@ func NewServerTracer(addr, path string) stats.Tracer {
 		},
 		[]string{labelKeyCaller, labelKeyCallee, labelKeyMethod, labelKeyStatus, labelKeyRetry},
 	)
-	registry.MustRegister(serverHandledCounter)
+	cfg.registry.MustRegister(serverHandledCounter)
 
 	serverHandledHistogram := prom.NewHistogramVec(
 		prom.HistogramOpts{
 			Name:    "kitex_server_latency_us",
 			Help:    "Latency (microseconds) of RPC that had been application-level handled by the server.",
-			Buckets: []float64{5000, 10000, 25000, 50000, 100000, 250000, 500000, 1000000},
+			Buckets: cfg.serverBuckets,
 		},
 		[]string{labelKeyCaller, labelKeyCallee, labelKeyMethod, labelKeyStatus, labelKeyRetry},
 	)
-	registry.MustRegister(serverHandledHistogram)
+	cfg.registry.MustRegister(serverHandledHistogram)
+
+	if cfg.enableGoCollector {
+		err := cfg.registry.Register(collectors.NewGoCollector())
+		if err != nil {
+			klog.Warn(err)
+		}
+	}
 
 	return &serverTracer{
 		serverHandledCounter:   serverHandledCounter,

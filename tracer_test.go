@@ -33,7 +33,8 @@ func TestPrometheusReporter(t *testing.T) {
 	http.Handle("/prometheus", promhttp.HandlerFor(registry, promhttp.HandlerOpts{ErrorHandling: promhttp.ContinueOnError}))
 	go func() {
 		if err := http.ListenAndServe(":9090", nil); err != nil {
-			t.Fatal("Unable to start a promhttp server, err: " + err.Error())
+			t.Error("Unable to start a promhttp server, err: " + err.Error())
+			return
 		}
 	}()
 
